@@ -27,6 +27,17 @@ const options = {
             created_at: { type: "string", format: "date-time" },
           },
         },
+        Message: {
+          type: "object",
+          properties: {
+            id: { type: "string", format: "uuid" },
+            content: { type: "string" },
+            role: { type: "string", enum: ["user", "assistant"] },
+            created_at: { type: "string", format: "date-time" },
+            thread_id: { type: "string", format: "uuid" },
+            user_id: { type: "string", format: "uuid" },
+          },
+        },
         Error: {
           type: "object",
           properties: {
