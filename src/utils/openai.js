@@ -42,7 +42,41 @@ async function extractKeywords(text) {
     .filter(Boolean);
 }
 
+// Batch embedding for up to 100 texts at once
+async function getEmbeddings(texts) {
+  if (!Array.isArray(texts)) texts = [texts];
+  const response = await axios.post(
+    "https://api.openai.com/v1/embeddings",
+    {
+      model: "text-embedding-ada-002",
+      input: texts,
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+    }
+  );
+  return response.data.data.map((d) => d.embedding);
+}
+
+async function getEmbedding(text) {
+  const [embedding] = await getEmbeddings([text]);
+  return embedding;
+}
+
+function cosineSimilarity(vecA, vecB) {
+  const dot = vecA.reduce((sum, a, i) => sum + a * vecB[i], 0);
+  const normA = Math.sqrt(vecA.reduce((sum, a) => sum + a * a, 0));
+  const normB = Math.sqrt(vecB.reduce((sum, b) => sum + b * b, 0));
+  return dot / (normA * normB);
+}
+
 module.exports = {
   getChatCompletion,
   extractKeywords,
+  getEmbedding,
+  getEmbeddings,
+  cosineSimilarity,
 };

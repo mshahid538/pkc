@@ -13,53 +13,80 @@ const createTablesSQL = {
       updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
     );
   `,
-  conversations: `
-    CREATE TABLE IF NOT EXISTS conversations (
+  threads: `
+    CREATE TABLE IF NOT EXISTS threads (
       id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
       user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       title VARCHAR(255) NOT NULL,
-      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-      updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
     );
   `,
   messages: `
     CREATE TABLE IF NOT EXISTS messages (
       id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-      conversation_id UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      content TEXT NOT NULL,
+      thread_id UUID NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
       role VARCHAR(20) NOT NULL CHECK (role IN ('user', 'assistant')),
+      content TEXT NOT NULL,
       created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
     );
   `,
   files: `
     CREATE TABLE IF NOT EXISTS files (
       id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      file_name VARCHAR(255) NOT NULL,
-      file_size BIGINT NOT NULL,
-      file_hash VARCHAR(64) NOT NULL,
-      file_type VARCHAR(10) NOT NULL,
+      filename VARCHAR(255) NOT NULL,
+      mime VARCHAR(50) NOT NULL,
+      size_bytes BIGINT NOT NULL,
+      checksum_sha256 VARCHAR(64) NOT NULL,
       storage_path VARCHAR(500) NOT NULL,
-      storage_url TEXT,
       text_content TEXT,
-      word_count INTEGER DEFAULT 0,
-      page_count INTEGER DEFAULT 0,
-      metadata JSONB DEFAULT '{}',
+      file_type VARCHAR(10),
       created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+      UNIQUE(checksum_sha256)
+    );
+  `,
+  thread_files: `
+    CREATE TABLE IF NOT EXISTS thread_files (
+      id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+      thread_id UUID NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+      file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    );
+  `,
+  summaries: `
+    CREATE TABLE IF NOT EXISTS summaries (
+      id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+      thread_id UUID NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+      short_summary TEXT,
+      long_summary TEXT,
       updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-      UNIQUE(user_id, file_hash)
+      UNIQUE(thread_id)
+    );
+  `,
+  tags: `
+    CREATE TABLE IF NOT EXISTS tags (
+      id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+      name VARCHAR(100) UNIQUE NOT NULL
+    );
+  `,
+  item_tags: `
+    CREATE TABLE IF NOT EXISTS item_tags (
+      id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+      item_type VARCHAR(20) NOT NULL,
+      item_id UUID NOT NULL,
+      tag_id UUID NOT NULL REFERENCES tags(id) ON DELETE CASCADE
     );
   `,
   file_chunks: `
     CREATE TABLE IF NOT EXISTS file_chunks (
       id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-      file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-      chunk_index INTEGER NOT NULL,
-      chunk_text TEXT NOT NULL,
-      chunk_embedding VECTOR(1536),
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      file_id UUID REFERENCES files(id) ON DELETE CASCADE,
+      filename VARCHAR(255),
+      chunk_index INTEGER,
+      chunk_text TEXT,
+      embedding VECTOR(1536),
       created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-      UNIQUE(file_id, chunk_index)
+      updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
     );
   `,
 };
@@ -68,27 +95,24 @@ const createIndexesSQL = {
   users_email: "CREATE INDEX IF NOT EXISTS users_email_idx ON users(email);",
   users_username:
     "CREATE INDEX IF NOT EXISTS users_username_idx ON users(username);",
-  conversations_user_id:
-    "CREATE INDEX IF NOT EXISTS conversations_user_id_idx ON conversations(user_id);",
-  conversations_created_at:
-    "CREATE INDEX IF NOT EXISTS conversations_created_at_idx ON conversations(created_at);",
-  messages_conversation_id:
-    "CREATE INDEX IF NOT EXISTS messages_conversation_id_idx ON messages(conversation_id);",
-  messages_created_at:
-    "CREATE INDEX IF NOT EXISTS messages_created_at_idx ON messages(created_at);",
-  files_user_id:
-    "CREATE INDEX IF NOT EXISTS files_user_id_idx ON files(user_id);",
-  files_file_hash:
-    "CREATE INDEX IF NOT EXISTS files_file_hash_idx ON files(file_hash);",
-  files_file_type:
-    "CREATE INDEX IF NOT EXISTS files_file_type_idx ON files(file_type);",
-  files_created_at:
-    "CREATE INDEX IF NOT EXISTS files_created_at_idx ON files(created_at);",
-  file_chunks_file_id:
+  idx_messages_thread_id_created_at:
+    "CREATE INDEX IF NOT EXISTS idx_messages_thread_id_created_at ON messages(thread_id, created_at);",
+  idx_files_checksum_sha256_unique:
+    "CREATE INDEX IF NOT EXISTS idx_files_checksum_sha256_unique ON files(checksum_sha256);",
+  idx_thread_files_thread_id:
+    "CREATE INDEX IF NOT EXISTS idx_thread_files_thread_id ON thread_files(thread_id);",
+  idx_summaries_thread_id:
+    "CREATE INDEX IF NOT EXISTS idx_summaries_thread_id ON summaries(thread_id);",
+  file_chunks_file_id_idx:
     "CREATE INDEX IF NOT EXISTS file_chunks_file_id_idx ON file_chunks(file_id);",
-  file_chunks_chunk_index:
+  file_chunks_chunk_index_idx:
     "CREATE INDEX IF NOT EXISTS file_chunks_chunk_index_idx ON file_chunks(chunk_index);",
 };
+// Ensure extensions are created
+async function createExtensions() {
+  await executeSQL('CREATE EXTENSION IF NOT EXISTS "uuid-ossp";');
+  await executeSQL('CREATE EXTENSION IF NOT EXISTS "vector";');
+}
 
 async function executeSQL(sql) {
   try {
@@ -114,12 +138,15 @@ async function runMigration() {
       process.exit(1);
     }
 
+    // Ensure extensions
+    await createExtensions();
+
+    // Test DB connection
     try {
       const { data, error } = await supabaseAdmin
         .from("users")
         .select("count")
         .limit(1);
-
       if (error && error.code !== "PGRST116") {
         console.error("Database connection failed:", error);
         process.exit(1);
@@ -129,21 +156,19 @@ async function runMigration() {
       process.exit(1);
     }
 
+    // Create tables
     for (const [tableName, sql] of Object.entries(createTablesSQL)) {
       const result = await executeSQL(sql);
-      if (result.success) {
-        // Table created
-      } else {
-        // Manual execution required
+      if (!result.success) {
+        console.error(`Failed to create table ${tableName}:`, result.error);
       }
     }
 
+    // Create indexes
     for (const [indexName, sql] of Object.entries(createIndexesSQL)) {
       const result = await executeSQL(sql);
-      if (result.success) {
-        // Index created
-      } else {
-        // Manual execution required
+      if (!result.success) {
+        console.error(`Failed to create index ${indexName}:`, result.error);
       }
     }
 
@@ -153,7 +178,6 @@ async function runMigration() {
         .from("users")
         .select("count")
         .limit(1);
-
       if (error && error.code !== "PGRST116") {
         console.error("Final test failed:", error);
       } else {

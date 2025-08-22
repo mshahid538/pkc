@@ -1,18 +1,3 @@
-const express = require("express");
-const { body, validationResult } = require("express-validator");
-
-const { supabase } = require("../config/database");
-const { asyncHandler, AppError } = require("../middleware/errorHandler");
-const { getChatCompletion } = require("../utils/openai");
-
-const router = express.Router();
-
-// Validation middleware
-const validateChatMessage = [
-  body("message").notEmpty().trim(),
-  body("threadId").optional().isUUID(),
-];
-
 /**
  * @swagger
  * /api/chat:
@@ -55,7 +40,7 @@ const validateChatMessage = [
  *                 data:
  *                   type: object
  *                   properties:
- *                     conversationId:
+ *                     threadId:
  *                       type: string
  *                       format: uuid
  *                       description: Conversation ID
@@ -82,6 +67,22 @@ const validateChatMessage = [
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
+const fs = require("fs");
+const express = require("express");
+const { body, validationResult } = require("express-validator");
+
+const { supabase } = require("../config/database");
+const { asyncHandler, AppError } = require("../middleware/errorHandler");
+const { getChatCompletion } = require("../utils/openai");
+
+const router = express.Router();
+
+// Validation middleware
+const validateChatMessage = [
+  body("message").notEmpty().trim(),
+  body("threadId").optional().isUUID(),
+];
+
 // Create or continue conversation thread
 router.post(
   "/",
@@ -158,10 +159,59 @@ router.post(
       .eq("thread_id", threadIdFinal)
       .order("created_at", { ascending: true })
       .limit(10);
-
     if (contextError) {
       console.error("Context fetch error:", contextError);
       throw new AppError("Failed to fetch conversation context", 500);
+    }
+
+    // RAG: Use precomputed file_chunks embeddings for semantic retrieval
+    const { getEmbeddings, cosineSimilarity } = require("../utils/openai");
+    let fileContext = "";
+    const SIMILARITY_THRESHOLD = 0.8; // Only use chunks above this threshold for strict RAG
+    try {
+      // Get embedding for user question
+      const [queryEmbedding] = await getEmbeddings([message]);
+      // Query all file_chunks for this user (filename is not required, use chunk_text)
+      const { data: chunks, error: chunkError } = await supabase
+        .from("file_chunks")
+        .select("chunk_text, embedding")
+        .eq("user_id", userId);
+      if (chunkError) throw chunkError;
+      if (chunks && chunks.length) {
+        // Compute similarity
+        for (const chunk of chunks) {
+          let embeddingB = chunk.embedding;
+          if (typeof embeddingB === "string") {
+            try {
+              embeddingB = JSON.parse(embeddingB);
+            } catch (e) {
+              embeddingB = [];
+            }
+          }
+          chunk.sim = cosineSimilarity(queryEmbedding, embeddingB);
+        }
+        // Sort by similarity and select top 5 chunks
+        const topChunks = chunks.sort((a, b) => b.sim - a.sim).slice(0, 5);
+        // Add logging for debugging
+        const topChunkLog = topChunks.map((c) => ({
+          sim: c.sim,
+          text: c.chunk_text.slice(0, 100),
+        }));
+        console.log("[AI FILE CHUNKS TOP 5]", topChunkLog);
+        // Only use chunks above the threshold
+        const relevantChunks = topChunks.filter(
+          (c) => c.sim >= SIMILARITY_THRESHOLD
+        );
+        if (relevantChunks.length) {
+          fileContext = relevantChunks.map((c) => c.chunk_text).join("\n\n");
+        } else {
+          fileContext = "";
+        }
+        // Limit context to 8000 characters (about 2000 tokens)
+        if (fileContext.length > 8000) fileContext = fileContext.slice(0, 8000);
+      }
+    } catch (e) {
+      console.error("File context fetch error (RAG):", e);
     }
 
     // Fetch latest summary for this thread (if any)
@@ -184,14 +234,64 @@ router.post(
 
     // Format messages for OpenAI
     let openaiMessages = [];
-    if (summaryMessage) openaiMessages.push(summaryMessage);
-    openaiMessages = openaiMessages.concat(
-      (contextMessages || []).map((m) => ({
-        role: m.role,
-        content: m.content,
-      }))
-    );
+    const fallback = "I don't know based on the provided files.";
+    // Helper: check if file context is meaningful (at least 10 words with 3+ alphabetic chars)
+    function isMeaningfulContext(text) {
+      if (!text) return false;
+      const words = text.trim().split(/\s+/);
+      const alphaWords = words.filter(
+        (w) => (w.match(/[a-zA-Z]/g) || []).length >= 3
+      );
+      return alphaWords.length >= 10;
+    }
 
+    if (fileContext && isMeaningfulContext(fileContext)) {
+      // If file context is found and meaningful, use strict RAG prompt
+      console.log(
+        "[AI FILE CONTEXT SENT TO OPENAI]",
+        fileContext.slice(0, 500)
+      );
+      openaiMessages.push({
+        role: "system",
+        content:
+          "You are an assistant for the Personal Knowledge Console (PKC). The user has uploaded the following files as their personal knowledge base.\n" +
+          "You MUST answer ONLY using the provided file content below. If the answer is not found in the file, reply ONLY: 'I don't know based on the provided files.'\n" +
+          "If you use information from the files, quote or reference the file content directly.\n" +
+          "\n--- FILE CONTEXT START ---\n" +
+          fileContext +
+          "\n--- FILE CONTEXT END ---\n" +
+          "\nUser question: " +
+          message +
+          "\n(Again, if the answer is not found in the file context above, reply ONLY: 'I don't know based on the provided files.')\n",
+      });
+      // Use all previous context messages
+      let filteredContextMessages = contextMessages || [];
+      if (summaryMessage) openaiMessages.push(summaryMessage);
+      openaiMessages = openaiMessages.concat(
+        filteredContextMessages.map((m) => ({
+          role: m.role,
+          content: m.content,
+        }))
+      );
+    } else {
+      // If no file context or not meaningful, allow LLM to answer generally, never mention fallback phrase, and exclude all previous assistant messages
+      openaiMessages.push({
+        role: "system",
+        content:
+          "You are a helpful AI assistant. The user has not uploaded any files for this question, or the file content is not meaningful. Answer as best as you can using your general knowledge. Do not say 'I don't know based on the provided files.'",
+      });
+      // Only include previous user messages (not assistant)
+      let filteredContextMessages = (contextMessages || []).filter(
+        (m) => m.role !== "assistant"
+      );
+      if (summaryMessage) openaiMessages.push(summaryMessage);
+      openaiMessages = openaiMessages.concat(
+        filteredContextMessages.map((m) => ({
+          role: m.role,
+          content: m.content,
+        }))
+      );
+    }
     // Add the latest user message if not present
     if (
       !openaiMessages.length ||
@@ -204,6 +304,17 @@ router.post(
     let assistantResponse;
     try {
       assistantResponse = await getChatCompletion(openaiMessages);
+      const fallback = "I don't know based on the provided files.";
+      // Always strip fallback phrase if present and not the only content
+      if (
+        assistantResponse &&
+        assistantResponse.trim() !== fallback &&
+        assistantResponse.includes(fallback)
+      ) {
+        assistantResponse = assistantResponse
+          .replace(new RegExp(`\\s*${fallback}\\s*$`), "")
+          .trim();
+      }
     } catch (err) {
       console.error("OpenAI error:", err.message);
       assistantResponse =

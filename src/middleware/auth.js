@@ -3,8 +3,14 @@ const { supabase } = require("../config/database");
 
 const authenticateToken = async (req, res, next) => {
   try {
+    // Try to get token from Authorization header or cookie
+    let token = null;
     const authHeader = req.headers["authorization"];
-    const token = authHeader && authHeader.split(" ")[1];
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      token = authHeader.split(" ")[1];
+    } else if (req.cookies && req.cookies.token) {
+      token = req.cookies.token;
+    }
 
     if (!token) {
       return res.status(401).json({
@@ -53,8 +59,14 @@ const authenticateToken = async (req, res, next) => {
 
 const optionalAuth = async (req, res, next) => {
   try {
+    // Try to get token from Authorization header or cookie
+    let token = null;
     const authHeader = req.headers["authorization"];
-    const token = authHeader && authHeader.split(" ")[1];
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      token = authHeader.split(" ")[1];
+    } else if (req.cookies && req.cookies.token) {
+      token = req.cookies.token;
+    }
 
     if (!token) {
       return next();

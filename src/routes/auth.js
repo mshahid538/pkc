@@ -18,6 +18,73 @@ const validateLogin = [
   body("email").isEmail().normalizeEmail(),
   body("password").notEmpty(),
 ];
+
+/**
+ * @swagger
+ * /api/auth/register:
+ *   post:
+ *     summary: Register a new user
+ *     description: Create a new user account with email, username, and password
+ *     tags: [Authentication]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *               - username
+ *               - password
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *                 example: "user@example.com"
+ *               username:
+ *                 type: string
+ *                 example: "username123"
+ *               password:
+ *                 type: string
+ *                 example: "password123"
+ *     responses:
+ *       201:
+ *         description: User registered successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     user:
+ *                       $ref: '#/components/schemas/User'
+ *                     token:
+ *                       type: string
+ *       400:
+ *         description: Validation failed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       409:
+ *         description: User already exists
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Failed to create user
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 router.post(
   "/register",
   validateRegistration,
@@ -68,6 +135,14 @@ router.post(
     // Generate JWT token
     const token = generateToken(user.id);
 
+    // Set JWT as HTTP-only cookie
+    res.cookie("token", token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    });
+
     res.status(201).json({
       success: true,
       message: "User registered successfully",
@@ -78,7 +153,6 @@ router.post(
           username: user.username,
           created_at: user.created_at,
         },
-        token,
       },
     });
   })
@@ -177,6 +251,14 @@ router.post(
     // Generate JWT token
     const token = generateToken(user.id);
 
+    // Set JWT as HTTP-only cookie
+    res.cookie("token", token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    });
+
     // Update last login
     await supabase
       .from("users")
@@ -193,7 +275,6 @@ router.post(
           username: user.username,
           created_at: user.created_at,
         },
-        token,
       },
     });
   })
@@ -223,6 +304,12 @@ router.post(
  */
 // Logout user (client-side token invalidation)
 router.post("/logout", (req, res) => {
+  // Clear the JWT cookie
+  res.clearCookie("token", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+  });
   res.json({
     success: true,
     message: "Logout successful",

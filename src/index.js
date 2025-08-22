@@ -16,6 +16,7 @@ const { authenticateToken } = require("./middleware/auth");
 
 const swaggerUi = require("swagger-ui-express");
 const swaggerSpecs = require("./config/swagger");
+const cookieParser = require("cookie-parser");
 
 const app = express();
 
@@ -44,6 +45,7 @@ app.use(limiter);
 
 app.use(morgan("combined"));
 app.use(compression());
+app.use(cookieParser());
 
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));

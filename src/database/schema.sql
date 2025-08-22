@@ -73,12 +73,14 @@ CREATE TABLE IF NOT EXISTS item_tags (
 
 CREATE TABLE IF NOT EXISTS file_chunks (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-  chunk_index INTEGER NOT NULL,
-  chunk_text TEXT NOT NULL,
-  chunk_embedding VECTOR(1536),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  file_id UUID REFERENCES files(id) ON DELETE CASCADE,
+  filename VARCHAR(255),
+  chunk_index INTEGER,
+  chunk_text TEXT,
+  embedding VECTOR(1536),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  UNIQUE(file_id, chunk_index)
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS users_email_idx ON users(email);

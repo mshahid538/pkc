@@ -10,6 +10,9 @@ const { asyncHandler, AppError } = require("../middleware/errorHandler");
 
 const { extractKeywords } = require("../utils/openai");
 const pdfParse = require("pdf-parse");
+const mammoth = require("mammoth");
+const XLSX = require("xlsx");
+const { parse: csvParse } = require("csv-parse/sync");
 
 const router = express.Router();
 
@@ -21,9 +24,9 @@ const upload = multer({
     files: 1,
   },
   fileFilter: (req, file, cb) => {
-    const allowedTypes = (process.env.ALLOWED_FILE_TYPES || "pdf,txt,md").split(
-      ","
-    );
+    const allowedTypes = (
+      process.env.ALLOWED_FILE_TYPES || "pdf,txt,md,doc,docx,xls,xlsx,csv"
+    ).split(",");
     const fileExtension = path
       .extname(file.originalname)
       .toLowerCase()
@@ -48,7 +51,7 @@ const upload = multer({
  * /api/upload:
  *   post:
  *     summary: Upload a file
- *     description: Upload a file (PDF, TXT, MD) with SHA256 deduplication
+ *     description: Upload a file (PDF, TXT, MD, DOC, DOCX, XLS, XLSX, CSV) with SHA256 deduplication
  *     tags: [Files]
  *     security:
  *       - bearerAuth: []
@@ -64,7 +67,7 @@ const upload = multer({
  *               file:
  *                 type: string
  *                 format: binary
- *                 description: File to upload (PDF, TXT, MD only, max 10MB)
+ *                 description: File to upload (PDF, TXT, MD, DOC, DOCX, XLS, XLSX, CSV only, max 10MB)
  *     responses:
  *       201:
  *         description: File uploaded successfully
@@ -126,15 +129,116 @@ router.post(
 
     const { data: existingFile } = await supabase
       .from("files")
-      .select("id")
+      .select("id, filename, text_content")
       .eq("checksum_sha256", fileHash)
       .maybeSingle();
     if (existingFile) {
-      return res.json({
-        success: true,
-        message: "File already exists",
-        data: { file: existingFile },
-      });
+      const { data: existingChunks } = await supabase
+        .from("file_chunks")
+        .select("id")
+        .eq("file_id", existingFile.id)
+        .eq("user_id", userId);
+      if (existingChunks && existingChunks.length > 0) {
+        console.log(
+          "[UPLOAD] File and file_chunks already exist for file:",
+          existingFile.id
+        );
+        return res.json({
+          success: true,
+          message: "File already exists",
+          data: { file: existingFile },
+        });
+      } else {
+        let textContent = existingFile.text_content;
+        if (!textContent || textContent.length === 0) {
+          console.error(
+            "[UPLOAD] File exists but has no text content to chunk/embed:",
+            existingFile.id
+          );
+          return res.json({
+            success: false,
+            message: "File exists but has no text content to chunk/embed.",
+            data: { file: existingFile },
+          });
+        }
+        try {
+          const { getEmbeddings } = require("../utils/openai");
+          const chunkSize = 500;
+          let chunks = [];
+          for (let i = 0; i < textContent.length; i += chunkSize) {
+            const chunkText = textContent.slice(i, i + chunkSize);
+            chunks.push({
+              chunk_index: Math.floor(i / chunkSize),
+              chunk_text: chunkText,
+            });
+          }
+          console.log(
+            `[UPLOAD] Chunking file ${existingFile.id}: ${chunks.length} chunks`
+          );
+          const chunkTexts = chunks.map((c) => c.chunk_text);
+          let embeddings = [];
+          for (let i = 0; i < chunkTexts.length; i += 100) {
+            const batch = chunkTexts.slice(i, i + 100);
+            try {
+              const batchEmbeddings = await getEmbeddings(batch);
+              embeddings.push(...batchEmbeddings);
+            } catch (embedErr) {
+              console.error("[UPLOAD] Embedding error for batch", i, embedErr);
+              throw embedErr;
+            }
+          }
+          if (embeddings.length !== chunks.length) {
+            console.error(
+              "[UPLOAD] Embedding count does not match chunk count",
+              embeddings.length,
+              chunks.length
+            );
+          }
+          const chunkRows = chunks.map((c, idx) => ({
+            user_id: req.user.id,
+            file_id: existingFile.id,
+            filename: existingFile.filename,
+            chunk_index: c.chunk_index,
+            chunk_text: c.chunk_text,
+            embedding: embeddings[idx],
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          }));
+          for (let i = 0; i < chunkRows.length; i += 100) {
+            const batch = chunkRows.slice(i, i + 100);
+            const { error: chunkInsertError } = await supabase
+              .from("file_chunks")
+              .insert(batch);
+            if (chunkInsertError) {
+              console.error(
+                "[UPLOAD] Error inserting file_chunks batch:",
+                chunkInsertError
+              );
+            } else {
+              console.log(
+                `[UPLOAD] Inserted file_chunks batch: ${i} - ${
+                  i + batch.length - 1
+                }`
+              );
+            }
+          }
+          console.log(
+            `[UPLOAD] Finished chunking/embedding for file: ${existingFile.id}`
+          );
+          return res.json({
+            success: true,
+            message: "File already exists, but chunks were created.",
+            data: { file: existingFile },
+          });
+        } catch (err) {
+          console.error("[UPLOAD] Error during chunking/embedding:", err);
+          return res.json({
+            success: false,
+            message: "Error during chunking/embedding.",
+            data: { file: existingFile },
+          });
+        }
+      }
     }
 
     const storagePath = `${userId}/${uuidv4()}${fileExtension}`;
@@ -149,12 +253,7 @@ router.post(
       throw new AppError("Failed to upload file to storage", 500);
 
     let textContent = "";
-    if (
-      fileExtension === ".txt" ||
-      fileExtension === ".md" ||
-      fileExtension === "txt" ||
-      fileExtension === "md"
-    ) {
+    if ([".txt", ".md", "txt", "md"].includes(fileExtension)) {
       textContent = fileBuffer.toString("utf-8");
     } else if (fileExtension === ".pdf" || fileExtension === "pdf") {
       try {
@@ -168,6 +267,50 @@ router.post(
         console.error("PDF extraction error:", err);
         textContent = "";
       }
+    } else if (fileExtension === ".docx" || fileExtension === "docx") {
+      try {
+        const result = await mammoth.extractRawText({ buffer: fileBuffer });
+        textContent = result.value;
+        console.log(
+          "[DOCX Extracted Text]",
+          textContent && textContent.slice(0, 200)
+        );
+      } catch (err) {
+        console.error("DOCX extraction error:", err);
+        textContent = "";
+      }
+    } else if ([".xls", ".xlsx", "xls", "xlsx"].includes(fileExtension)) {
+      try {
+        const workbook = XLSX.read(fileBuffer, { type: "buffer" });
+        let sheetText = [];
+        workbook.SheetNames.forEach((sheetName) => {
+          const sheet = workbook.Sheets[sheetName];
+          const csv = XLSX.utils.sheet_to_csv(sheet);
+          sheetText.push(csv);
+        });
+        textContent = sheetText.join("\n");
+        console.log(
+          "[Excel Extracted Text]",
+          textContent && textContent.slice(0, 200)
+        );
+      } catch (err) {
+        console.error("Excel extraction error:", err);
+        textContent = "";
+      }
+    } else if (fileExtension === ".csv" || fileExtension === "csv") {
+      try {
+        const records = csvParse(fileBuffer.toString("utf-8"), {
+          columns: false,
+        });
+        textContent = records.map((row) => row.join(", ")).join("\n");
+        console.log(
+          "[CSV Extracted Text]",
+          textContent && textContent.slice(0, 200)
+        );
+      } catch (err) {
+        console.error("CSV extraction error:", err);
+        textContent = "";
+      }
     }
 
     let keywords = [];
@@ -177,23 +320,44 @@ router.post(
       } catch (err) {}
     }
 
+    let safeTextContent =
+      textContent && textContent.length > 100000
+        ? textContent.slice(0, 100000)
+        : textContent;
     // Store file metadata in database (new schema)
+    const safeMime =
+      file.mimetype && file.mimetype.length > 50
+        ? file.mimetype.slice(0, 50)
+        : file.mimetype;
+    const safeFileType = fileExtension.replace(".", "").slice(0, 50);
     const { data: fileRecord, error: dbError } = await supabase
       .from("files")
       .insert([
         {
           filename: fileName,
-          mime: file.mimetype,
+          mime: safeMime,
           size_bytes: fileSize,
           checksum_sha256: fileHash,
           storage_path: storagePath,
-          file_type: fileExtension.replace(".", ""),
-          text_content:
-            [".txt", ".md", ".pdf", "txt", "md", "pdf"].includes(
-              fileExtension
-            ) || file.mimetype === "application/pdf"
-              ? textContent
-              : null,
+          file_type: safeFileType,
+          text_content: [
+            ".txt",
+            ".md",
+            ".pdf",
+            ".docx",
+            ".xls",
+            ".xlsx",
+            ".csv",
+            "txt",
+            "md",
+            "pdf",
+            "docx",
+            "xls",
+            "xlsx",
+            "csv",
+          ].includes(fileExtension)
+            ? safeTextContent
+            : null,
           created_at: new Date().toISOString(),
         },
       ])
@@ -203,23 +367,44 @@ router.post(
       .single();
 
     if (dbError) {
+      console.error("Database insert error (files):", dbError);
       await supabase.storage.from(bucketName).remove([storagePath]);
       throw new AppError("Failed to store file metadata", 500);
     }
 
-    // Link file to user's most recent thread
-    const { data: threads, error: threadsError } = await supabase
+    let threadId;
+    let { data: threads, error: threadsError } = await supabase
       .from("threads")
       .select("id, created_at")
       .eq("user_id", req.user.id)
       .order("created_at", { ascending: false })
       .limit(1);
 
-    if (threadsError || !threads || threads.length === 0) {
-      throw new AppError("No thread found to link file", 400);
+    if (threadsError) {
+      throw new AppError("Failed to fetch threads", 500);
     }
-
-    const threadId = threads[0].id;
+    if (!threads || threads.length === 0) {
+      const { data: newThread, error: createError } = await supabase
+        .from("threads")
+        .insert([
+          {
+            user_id: req.user.id,
+            title:
+              fileName.substring(0, 100) + (fileName.length > 100 ? "..." : ""),
+            created_at: new Date().toISOString(),
+          },
+        ])
+        .select("id, title, created_at")
+        .single();
+      if (createError || !newThread) {
+        await supabase.from("files").delete().eq("id", fileRecord.id);
+        await supabase.storage.from(bucketName).remove([storagePath]);
+        throw new AppError("Failed to create thread for file", 500);
+      }
+      threadId = newThread.id;
+    } else {
+      threadId = threads[0].id;
+    }
     const { error: tfError } = await supabase.from("thread_files").insert([
       {
         thread_id: threadId,
@@ -227,7 +412,6 @@ router.post(
         created_at: new Date().toISOString(),
       },
     ]);
-
     if (tfError) {
       await supabase.from("files").delete().eq("id", fileRecord.id);
       await supabase.storage.from(bucketName).remove([storagePath]);
@@ -261,6 +445,77 @@ router.post(
       // Clean up uploaded file if database insert fails
       await supabase.storage.from(bucketName).remove([storagePath]);
       throw new AppError("Failed to store file metadata", 500);
+    }
+
+    // --- RAG: Chunk, embed, and store in file_chunks table ---
+    if (fileRecord && fileRecord.id && textContent && textContent.length > 0) {
+      try {
+        const { getEmbeddings } = require("../utils/openai");
+        const chunkSize = 500;
+        let chunks = [];
+        for (let i = 0; i < textContent.length; i += chunkSize) {
+          const chunkText = textContent.slice(i, i + chunkSize);
+          chunks.push({
+            chunk_index: Math.floor(i / chunkSize),
+            chunk_text: chunkText,
+          });
+        }
+        console.log(
+          `[UPLOAD] Chunking file ${fileRecord.id}: ${chunks.length} chunks`
+        );
+        const chunkTexts = chunks.map((c) => c.chunk_text);
+        let embeddings = [];
+        for (let i = 0; i < chunkTexts.length; i += 100) {
+          const batch = chunkTexts.slice(i, i + 100);
+          try {
+            const batchEmbeddings = await getEmbeddings(batch);
+            embeddings.push(...batchEmbeddings);
+          } catch (embedErr) {
+            console.error("[UPLOAD] Embedding error for batch", i, embedErr);
+            throw embedErr;
+          }
+        }
+        if (embeddings.length !== chunks.length) {
+          console.error(
+            "[UPLOAD] Embedding count does not match chunk count",
+            embeddings.length,
+            chunks.length
+          );
+        }
+        const chunkRows = chunks.map((c, idx) => ({
+          user_id: req.user.id,
+          file_id: fileRecord.id,
+          filename: fileRecord.filename,
+          chunk_index: c.chunk_index,
+          chunk_text: c.chunk_text,
+          embedding: embeddings[idx],
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }));
+        for (let i = 0; i < chunkRows.length; i += 100) {
+          const batch = chunkRows.slice(i, i + 100);
+          const { error: chunkInsertError } = await supabase
+            .from("file_chunks")
+            .insert(batch);
+          if (chunkInsertError) {
+            console.error(
+              "[UPLOAD] Error inserting file_chunks batch:",
+              chunkInsertError
+            );
+          } else {
+            console.log(
+              `[UPLOAD] Inserted file_chunks batch: ${i} - ${
+                i + batch.length - 1
+              }`
+            );
+          }
+        }
+        console.log(
+          `[UPLOAD] Finished chunking/embedding for file: ${fileRecord.id}`
+        );
+      } catch (err) {
+        console.error("[UPLOAD] Error during chunking/embedding:", err);
+      }
     }
 
     res.status(201).json({
