@@ -2,11 +2,11 @@ const express = require("express");
 const multer = require("multer");
 const crypto = require("crypto");
 const path = require("path");
-const fs = require("fs");
 const { v4: uuidv4 } = require("uuid");
 
-const { supabase } = require("../config/database");
+const { supabase, supabaseAdmin } = require("../config/database");
 const { asyncHandler, AppError } = require("../middleware/errorHandler");
+const { authenticateToken } = require("../middleware/auth");
 
 const { extractKeywords } = require("../utils/openai");
 const pdfParse = require("pdf-parse");
@@ -26,7 +26,7 @@ const upload = multer({
   fileFilter: (req, file, cb) => {
     const allowedTypes = (
       process.env.ALLOWED_FILE_TYPES || "pdf,txt,md,doc,docx,xls,xlsx,csv"
-    ).split(",");
+    ).split(",").map(type => type.trim().toLowerCase());
     const fileExtension = path
       .extname(file.originalname)
       .toLowerCase()
@@ -109,6 +109,7 @@ const upload = multer({
 // Upload file
 router.post(
   "/",
+  authenticateToken,
   upload.single("file"),
   asyncHandler(async (req, res) => {
     if (!req.file) {
@@ -139,10 +140,7 @@ router.post(
         .eq("file_id", existingFile.id)
         .eq("user_id", userId);
       if (existingChunks && existingChunks.length > 0) {
-        console.log(
-          "[UPLOAD] File and file_chunks already exist for file:",
-          existingFile.id
-        );
+
         return res.json({
           success: true,
           message: "File already exists",
@@ -151,10 +149,7 @@ router.post(
       } else {
         let textContent = existingFile.text_content;
         if (!textContent || textContent.length === 0) {
-          console.error(
-            "[UPLOAD] File exists but has no text content to chunk/embed:",
-            existingFile.id
-          );
+          
           return res.json({
             success: false,
             message: "File exists but has no text content to chunk/embed.",
@@ -172,9 +167,7 @@ router.post(
               chunk_text: chunkText,
             });
           }
-          console.log(
-            `[UPLOAD] Chunking file ${existingFile.id}: ${chunks.length} chunks`
-          );
+
           const chunkTexts = chunks.map((c) => c.chunk_text);
           let embeddings = [];
           for (let i = 0; i < chunkTexts.length; i += 100) {
@@ -188,11 +181,7 @@ router.post(
             }
           }
           if (embeddings.length !== chunks.length) {
-            console.error(
-              "[UPLOAD] Embedding count does not match chunk count",
-              embeddings.length,
-              chunks.length
-            );
+
           }
           const chunkRows = chunks.map((c, idx) => ({
             user_id: req.user.id,
@@ -206,19 +195,13 @@ router.post(
           }));
           for (let i = 0; i < chunkRows.length; i += 100) {
             const batch = chunkRows.slice(i, i + 100);
-            const { error: chunkInsertError } = await supabase
+            const { error: chunkInsertError } = await supabaseAdmin
               .from("file_chunks")
               .insert(batch);
             if (chunkInsertError) {
               console.error(
                 "[UPLOAD] Error inserting file_chunks batch:",
                 chunkInsertError
-              );
-            } else {
-              console.log(
-                `[UPLOAD] Inserted file_chunks batch: ${i} - ${
-                  i + batch.length - 1
-                }`
               );
             }
           }
@@ -243,14 +226,19 @@ router.post(
 
     const storagePath = `${userId}/${uuidv4()}${fileExtension}`;
     const bucketName = process.env.UPLOAD_BUCKET_NAME || "pkc-uploads";
-    const { error: uploadError } = await supabase.storage
+    
+
+    
+    const { error: uploadError } = await supabaseAdmin.storage
       .from(bucketName)
       .upload(storagePath, fileBuffer, {
         contentType: file.mimetype,
         upsert: false,
       });
-    if (uploadError)
+    
+    if (uploadError) {
       throw new AppError("Failed to upload file to storage", 500);
+    }
 
     let textContent = "";
     if ([".txt", ".md", "txt", "md"].includes(fileExtension)) {
@@ -259,24 +247,18 @@ router.post(
       try {
         const data = await pdfParse(fileBuffer);
         textContent = data.text;
-        console.log(
-          "[PDF Extracted Text]",
-          textContent && textContent.slice(0, 200)
-        );
+
       } catch (err) {
         console.error("PDF extraction error:", err);
         textContent = "";
       }
-    } else if (fileExtension === ".docx" || fileExtension === "docx") {
+    } else if ([".doc", ".docx", "doc", "docx"].includes(fileExtension)) {
       try {
         const result = await mammoth.extractRawText({ buffer: fileBuffer });
         textContent = result.value;
-        console.log(
-          "[DOCX Extracted Text]",
-          textContent && textContent.slice(0, 200)
-        );
+
       } catch (err) {
-        console.error("DOCX extraction error:", err);
+        console.error(`${fileExtension.toUpperCase()} extraction error:`, err);
         textContent = "";
       }
     } else if ([".xls", ".xlsx", "xls", "xlsx"].includes(fileExtension)) {
@@ -289,10 +271,7 @@ router.post(
           sheetText.push(csv);
         });
         textContent = sheetText.join("\n");
-        console.log(
-          "[Excel Extracted Text]",
-          textContent && textContent.slice(0, 200)
-        );
+
       } catch (err) {
         console.error("Excel extraction error:", err);
         textContent = "";
@@ -303,10 +282,7 @@ router.post(
           columns: false,
         });
         textContent = records.map((row) => row.join(", ")).join("\n");
-        console.log(
-          "[CSV Extracted Text]",
-          textContent && textContent.slice(0, 200)
-        );
+
       } catch (err) {
         console.error("CSV extraction error:", err);
         textContent = "";
@@ -344,6 +320,7 @@ router.post(
             ".txt",
             ".md",
             ".pdf",
+            ".doc",
             ".docx",
             ".xls",
             ".xlsx",
@@ -351,6 +328,7 @@ router.post(
             "txt",
             "md",
             "pdf",
+            "doc",
             "docx",
             "xls",
             "xlsx",
@@ -368,7 +346,7 @@ router.post(
 
     if (dbError) {
       console.error("Database insert error (files):", dbError);
-      await supabase.storage.from(bucketName).remove([storagePath]);
+      await supabaseAdmin.storage.from(bucketName).remove([storagePath]);
       throw new AppError("Failed to store file metadata", 500);
     }
 
@@ -396,11 +374,11 @@ router.post(
         ])
         .select("id, title, created_at")
         .single();
-      if (createError || !newThread) {
-        await supabase.from("files").delete().eq("id", fileRecord.id);
-        await supabase.storage.from(bucketName).remove([storagePath]);
-        throw new AppError("Failed to create thread for file", 500);
-      }
+             if (createError || !newThread) {
+         await supabase.from("files").delete().eq("id", fileRecord.id);
+         await supabaseAdmin.storage.from(bucketName).remove([storagePath]);
+         throw new AppError("Failed to create thread for file", 500);
+       }
       threadId = newThread.id;
     } else {
       threadId = threads[0].id;
@@ -412,11 +390,11 @@ router.post(
         created_at: new Date().toISOString(),
       },
     ]);
-    if (tfError) {
-      await supabase.from("files").delete().eq("id", fileRecord.id);
-      await supabase.storage.from(bucketName).remove([storagePath]);
-      throw new AppError("Failed to link file to thread", 500);
-    }
+         if (tfError) {
+       await supabase.from("files").delete().eq("id", fileRecord.id);
+       await supabaseAdmin.storage.from(bucketName).remove([storagePath]);
+       throw new AppError("Failed to link file to thread", 500);
+     }
 
     // Insert tags (if any keywords extracted)
     if (keywords.length) {
@@ -440,12 +418,12 @@ router.post(
       }
     }
 
-    if (dbError) {
-      console.error("Database insert error:", dbError);
-      // Clean up uploaded file if database insert fails
-      await supabase.storage.from(bucketName).remove([storagePath]);
-      throw new AppError("Failed to store file metadata", 500);
-    }
+         if (dbError) {
+       console.error("Database insert error:", dbError);
+       // Clean up uploaded file if database insert fails
+       await supabaseAdmin.storage.from(bucketName).remove([storagePath]);
+       throw new AppError("Failed to store file metadata", 500);
+     }
 
     // --- RAG: Chunk, embed, and store in file_chunks table ---
     if (fileRecord && fileRecord.id && textContent && textContent.length > 0) {
@@ -460,9 +438,7 @@ router.post(
             chunk_text: chunkText,
           });
         }
-        console.log(
-          `[UPLOAD] Chunking file ${fileRecord.id}: ${chunks.length} chunks`
-        );
+
         const chunkTexts = chunks.map((c) => c.chunk_text);
         let embeddings = [];
         for (let i = 0; i < chunkTexts.length; i += 100) {
@@ -475,13 +451,7 @@ router.post(
             throw embedErr;
           }
         }
-        if (embeddings.length !== chunks.length) {
-          console.error(
-            "[UPLOAD] Embedding count does not match chunk count",
-            embeddings.length,
-            chunks.length
-          );
-        }
+
         const chunkRows = chunks.map((c, idx) => ({
           user_id: req.user.id,
           file_id: fileRecord.id,
@@ -494,25 +464,12 @@ router.post(
         }));
         for (let i = 0; i < chunkRows.length; i += 100) {
           const batch = chunkRows.slice(i, i + 100);
-          const { error: chunkInsertError } = await supabase
+          const { error: chunkInsertError } = await supabaseAdmin
             .from("file_chunks")
             .insert(batch);
-          if (chunkInsertError) {
-            console.error(
-              "[UPLOAD] Error inserting file_chunks batch:",
-              chunkInsertError
-            );
-          } else {
-            console.log(
-              `[UPLOAD] Inserted file_chunks batch: ${i} - ${
-                i + batch.length - 1
-              }`
-            );
-          }
+
         }
-        console.log(
-          `[UPLOAD] Finished chunking/embedding for file: ${fileRecord.id}`
-        );
+
       } catch (err) {
         console.error("[UPLOAD] Error during chunking/embedding:", err);
       }
@@ -594,6 +551,7 @@ router.post(
 // Get all files for user
 router.get(
   "/",
+  authenticateToken,
   asyncHandler(async (req, res) => {
     const userId = req.user.id;
     const { page = 1, limit = 20 } = req.query;
@@ -711,6 +669,7 @@ router.get(
 // Get specific file details
 router.get(
   "/:fileId",
+  authenticateToken,
   asyncHandler(async (req, res) => {
     const { fileId } = req.params;
     const userId = req.user.id;
@@ -739,8 +698,6 @@ router.get(
       .single();
 
     if (tfError || !threadFile) {
-      console.error("DEBUG: threadIds=", threadIds);
-      console.error("DEBUG: threadFile=", threadFile, "tfError=", tfError);
       throw new AppError("File not found or access denied", 404);
     }
 
@@ -823,6 +780,7 @@ router.get(
 // Delete file
 router.delete(
   "/:fileId",
+  authenticateToken,
   asyncHandler(async (req, res) => {
     const { fileId } = req.params;
     const userId = req.user.id;
@@ -850,8 +808,6 @@ router.delete(
       .in("thread_id", threadIds);
 
     if (tfError || !threadFiles || threadFiles.length === 0) {
-      console.error("DEBUG: threadIds=", threadIds);
-      console.error("DEBUG: threadFiles=", threadFiles, "tfError=", tfError);
       throw new AppError("File not found or access denied", 404);
     }
 
@@ -869,7 +825,7 @@ router.delete(
     const bucketName = process.env.UPLOAD_BUCKET_NAME || "pkc-uploads";
 
     // Delete from storage
-    const { error: storageError } = await supabase.storage
+    const { error: storageError } = await supabaseAdmin.storage
       .from(bucketName)
       .remove([file.storage_path]);
 
@@ -959,6 +915,7 @@ router.delete(
 // Get file content (for text files)
 router.get(
   "/:fileId/content",
+  authenticateToken,
   asyncHandler(async (req, res) => {
     const { fileId } = req.params;
     const userId = req.user.id;
@@ -987,8 +944,6 @@ router.get(
       .single();
 
     if (tfError || !threadFile) {
-      console.error("DEBUG: threadIds=", threadIds);
-      console.error("DEBUG: threadFile=", threadFile, "tfError=", tfError);
       throw new AppError("File not found or access denied", 404);
     }
 

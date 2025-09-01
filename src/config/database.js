@@ -99,6 +99,37 @@ async function parseFile(fileBuffer, fileExtension) {
 
   return textContent;
 }
+async function setUserContext(userId) {
+  try {
+    if (!userId) {
+
+      await supabase.rpc('set_user_context', { user_id: null });
+      return;
+    }
+    
+    const { error } = await supabase.rpc('set_user_context', { user_id: userId });
+    if (error) {
+      console.error('Error setting user context:', error);
+    }
+  } catch (error) {
+    console.error('Error setting user context:', error);
+  }
+}
+
+function createUserClient(userId) {
+  const userSupabase = createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      autoRefreshToken: true,
+      persistSession: false,
+    },
+  });
+
+  if (userId) {
+    setUserContext(userId);
+  }
+
+  return userSupabase;
+}
 
 module.exports = {
   supabase,
@@ -106,4 +137,6 @@ module.exports = {
   testConnection,
   initializeDatabase,
   parseFile,
+  setUserContext,
+  createUserClient,
 };

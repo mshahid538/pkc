@@ -1,5 +1,13 @@
 const swaggerJsdoc = require("swagger-jsdoc");
 
+// Determine the base URL dynamically
+const getBaseUrl = () => {
+  if (process.env.NODE_ENV === "production") {
+    return "https://pkc-superbase-openai.vercel.app";
+  }
+  return `http://localhost:${process.env.PORT || 3000}`;
+};
+
 const options = {
   definition: {
     openapi: "3.0.0",
@@ -8,7 +16,12 @@ const options = {
       version: "1.0.0",
       description: "Personal Knowledge Console API documentation",
     },
-    servers: [{ url: "http://localhost:3000", description: "Local server" }],
+    servers: [
+      { 
+        url: getBaseUrl(), 
+        description: process.env.NODE_ENV === "production" ? "Production server" : "Local server" 
+      }
+    ],
     components: {
       securitySchemes: {
         bearerAuth: {

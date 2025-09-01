@@ -24,7 +24,7 @@ const commonValidations = {
     .withMessage("Message must not be empty and less than 10,000 characters"),
 
   threadId: body("threadId")
-    .optional()
+    .optional({ checkFalsy: true })
     .isUUID()
     .withMessage("Thread ID must be a valid UUID"),
 

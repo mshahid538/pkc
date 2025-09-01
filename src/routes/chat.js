@@ -24,8 +24,18 @@
  *               threadId:
  *                 type: string
  *                 format: uuid
- *                 example: "123e4567-e89b-12d3-a456-426614174000"
- *                 description: Optional conversation ID to continue existing thread
+ *                 nullable: true
+ *                 description: Optional conversation ID to continue existing thread. Omit this field when starting a new chat.
+ *           examples:
+ *             newChat:
+ *               summary: Start a new chat
+ *               value:
+ *                 message: "Hello, how are you?"
+ *             continueChat:
+ *               summary: Continue existing chat
+ *               value:
+ *                 message: "Continue our conversation"
+ *                 threadId: "123e4567-e89b-12d3-a456-426614174000"
  *     responses:
  *       200:
  *         description: Message sent successfully
@@ -67,12 +77,12 @@
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-const fs = require("fs");
 const express = require("express");
 const { body, validationResult } = require("express-validator");
 
 const { supabase } = require("../config/database");
 const { asyncHandler, AppError } = require("../middleware/errorHandler");
+const { authenticateToken } = require("../middleware/auth");
 const { getChatCompletion } = require("../utils/openai");
 
 const router = express.Router();
@@ -80,12 +90,13 @@ const router = express.Router();
 // Validation middleware
 const validateChatMessage = [
   body("message").notEmpty().trim(),
-  body("threadId").optional().isUUID(),
+  body("threadId").optional({ checkFalsy: true }).isUUID(),
 ];
 
 // Create or continue conversation thread
 router.post(
   "/",
+  authenticateToken,
   validateChatMessage,
   asyncHandler(async (req, res) => {
     const errors = validationResult(req);
@@ -167,7 +178,7 @@ router.post(
     // RAG: Use precomputed file_chunks embeddings for semantic retrieval
     const { getEmbeddings, cosineSimilarity } = require("../utils/openai");
     let fileContext = "";
-    const SIMILARITY_THRESHOLD = 0.8; // Only use chunks above this threshold for strict RAG
+    const SIMILARITY_THRESHOLD = 0.3;
     try {
       // Get embedding for user question
       const [queryEmbedding] = await getEmbeddings([message]);
@@ -177,6 +188,7 @@ router.post(
         .select("chunk_text, embedding")
         .eq("user_id", userId);
       if (chunkError) throw chunkError;
+
       if (chunks && chunks.length) {
         // Compute similarity
         for (const chunk of chunks) {
@@ -185,10 +197,16 @@ router.post(
             try {
               embeddingB = JSON.parse(embeddingB);
             } catch (e) {
+              console.error("[AI EMBEDDING PARSE ERROR]", e);
               embeddingB = [];
             }
           }
-          chunk.sim = cosineSimilarity(queryEmbedding, embeddingB);
+          if (!Array.isArray(embeddingB) || embeddingB.length === 0) {
+            console.error("[AI INVALID EMBEDDING]", chunk.chunk_text.slice(0, 50));
+            chunk.sim = 0;
+          } else {
+            chunk.sim = cosineSimilarity(queryEmbedding, embeddingB);
+          }
         }
         // Sort by similarity and select top 5 chunks
         const topChunks = chunks.sort((a, b) => b.sim - a.sim).slice(0, 5);
@@ -197,7 +215,6 @@ router.post(
           sim: c.sim,
           text: c.chunk_text.slice(0, 100),
         }));
-        console.log("[AI FILE CHUNKS TOP 5]", topChunkLog);
         // Only use chunks above the threshold
         const relevantChunks = topChunks.filter(
           (c) => c.sim >= SIMILARITY_THRESHOLD
@@ -235,6 +252,7 @@ router.post(
     // Format messages for OpenAI
     let openaiMessages = [];
     const fallback = "I don't know based on the provided files.";
+    
     // Helper: check if file context is meaningful (at least 10 words with 3+ alphabetic chars)
     function isMeaningfulContext(text) {
       if (!text) return false;
@@ -245,12 +263,27 @@ router.post(
       return alphaWords.length >= 10;
     }
 
-    if (fileContext && isMeaningfulContext(fileContext)) {
-      // If file context is found and meaningful, use strict RAG prompt
-      console.log(
-        "[AI FILE CONTEXT SENT TO OPENAI]",
-        fileContext.slice(0, 500)
+    function isRelevantContext(context, question) {
+      if (!context || !question) return false;
+      
+      const contextLower = context.toLowerCase();
+      const questionLower = question.toLowerCase();
+      
+      const questionWords = questionLower.split(/\s+/).filter(word => 
+        word.length > 2 && !['the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'about', 'tell', 'me'].includes(word)
       );
+
+      return questionWords.some(word => contextLower.includes(word));
+    }
+
+    const hasRelevantFileContext = fileContext && 
+      isMeaningfulContext(fileContext) && 
+      isRelevantContext(fileContext, message);
+
+
+
+    if (hasRelevantFileContext) {
+
       openaiMessages.push({
         role: "system",
         content:
@@ -264,7 +297,6 @@ router.post(
           message +
           "\n(Again, if the answer is not found in the file context above, reply ONLY: 'I don't know based on the provided files.')\n",
       });
-      // Use all previous context messages
       let filteredContextMessages = contextMessages || [];
       if (summaryMessage) openaiMessages.push(summaryMessage);
       openaiMessages = openaiMessages.concat(
@@ -274,11 +306,10 @@ router.post(
         }))
       );
     } else {
-      // If no file context or not meaningful, allow LLM to answer generally, never mention fallback phrase, and exclude all previous assistant messages
       openaiMessages.push({
         role: "system",
         content:
-          "You are a helpful AI assistant. The user has not uploaded any files for this question, or the file content is not meaningful. Answer as best as you can using your general knowledge. Do not say 'I don't know based on the provided files.'",
+          "You are a helpful AI assistant. The user has not uploaded any files for this question, or the file content is not relevant. Answer as best as you can using your general knowledge. Do not say 'I don't know based on the provided files.'",
       });
       // Only include previous user messages (not assistant)
       let filteredContextMessages = (contextMessages || []).filter(
@@ -467,6 +498,7 @@ router.post(
 // Get conversation history
 router.get(
   "/:threadId",
+  authenticateToken,
   asyncHandler(async (req, res) => {
     const { threadId } = req.params;
     const userId = req.user.id;
@@ -546,6 +578,7 @@ router.get(
 // Get all conversations for user
 router.get(
   "/",
+  authenticateToken,
   asyncHandler(async (req, res) => {
     const userId = req.user.id;
 
@@ -652,6 +685,7 @@ router.get(
 // Delete conversation
 router.delete(
   "/:threadId",
+  authenticateToken,
   asyncHandler(async (req, res) => {
     const { threadId } = req.params;
     const userId = req.user.id;
@@ -696,5 +730,7 @@ router.delete(
     });
   })
 );
+
+
 
 module.exports = router;

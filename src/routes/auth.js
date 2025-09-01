@@ -1,8 +1,8 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
 const { body, validationResult } = require("express-validator");
-const { supabase } = require("../config/database");
-const { generateToken } = require("../middleware/auth");
+const { supabase, supabaseAdmin, setUserContext } = require("../config/database");
+const { generateToken, authenticateToken } = require("../middleware/auth");
 const { asyncHandler, AppError } = require("../middleware/errorHandler");
 
 const router = express.Router();
@@ -96,7 +96,7 @@ router.post(
 
     const { email, password, username } = req.body;
 
-    const { data: existingUser, error: checkError } = await supabase
+    const { data: existingUser, error: checkError } = await supabaseAdmin
       .from("users")
       .select("id")
       .or(`email.eq.${email},username.eq.${username}`)
@@ -113,8 +113,7 @@ router.post(
     const saltRounds = 12;
     const hashedPassword = await bcrypt.hash(password, saltRounds);
 
-    // Create user
-    const { data: user, error: createError } = await supabase
+    const { data: user, error: createError } = await supabaseAdmin
       .from("users")
       .insert([
         {
@@ -134,6 +133,12 @@ router.post(
 
     // Generate JWT token
     const token = generateToken(user.id);
+
+    try {
+      await setUserContext(user.id);
+    } catch (contextError) {
+      console.error('Failed to set user context during registration:', contextError);
+    }
 
     // Set JWT as HTTP-only cookie
     res.cookie("token", token, {
@@ -232,7 +237,7 @@ router.post(
 
     const { email, password } = req.body;
 
-    const { data: user, error: findError } = await supabase
+    const { data: user, error: findError } = await supabaseAdmin
       .from("users")
       .select("id, email, username, password_hash, created_at")
       .eq("email", email)
@@ -251,16 +256,22 @@ router.post(
     // Generate JWT token
     const token = generateToken(user.id);
 
+    try {
+      await setUserContext(user.id);
+    } catch (contextError) {
+      console.error('Failed to set user context during login:', contextError);
+    }
+
     // Set JWT as HTTP-only cookie
     res.cookie("token", token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
     });
 
     // Update last login
-    await supabase
+    await supabaseAdmin
       .from("users")
       .update({ last_login: new Date().toISOString() })
       .eq("id", user.id);
@@ -275,6 +286,7 @@ router.post(
           username: user.username,
           created_at: user.created_at,
         },
+        token: token, // Include token in response for header-based auth
       },
     });
   })
@@ -308,7 +320,7 @@ router.post("/logout", (req, res) => {
   res.clearCookie("token", {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
+    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
   });
   res.json({
     success: true,
@@ -349,7 +361,6 @@ router.post("/logout", (req, res) => {
  *               $ref: '#/components/schemas/Error'
  */
 // Get current user profile
-const { authenticateToken } = require("../middleware/auth");
 router.get(
   "/profile",
   authenticateToken,
@@ -367,5 +378,7 @@ router.get(
     });
   })
 );
+
+
 
 module.exports = router;
