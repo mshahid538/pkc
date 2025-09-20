@@ -1,56 +1,36 @@
 {
-  "name": "personal-knowledge-console",
+  "name": "pkc-superbase-openai",
   "version": "1.0.0",
-  "description": "Personal Knowledge Console",
-  "main": "src/index.js",
+  "description": "PKCc- Personal Knowledge Console",
+  "private": true,
   "scripts": {
-    "start": "node src/index.js",
-    "dev": "nodemon src/index.js",
-    "test": "jest",
-    "lint": "eslint src/",
-    "migrate": "node src/database/migrate.js",
-    "setup": "node setup.js"
-  },
-  "keywords": [
-    "knowledge",
-    "console",
-    "chat",
-    "file-upload",
-    "api"
-  ],
-  "author": "PKC Team",
-  "license": "MIT",
-  "dependencies": {
-    "@supabase/supabase-js": "^2.38.4",
-    "axios": "^1.11.0",
-    "bcryptjs": "^2.4.3",
-    "compression": "^1.7.4",
-    "cookie-parser": "^1.4.7",
-    "cors": "^2.8.5",
-    "crypto": "^1.0.1",
-    "csv-parse": "^6.1.0",
-    "dotenv": "^16.3.1",
-    "express": "^4.18.2",
-    "express-rate-limit": "^7.1.5",
-    "express-validator": "^7.0.1",
-    "helmet": "^7.1.0",
-    "jsonwebtoken": "^9.0.2",
-    "mammoth": "^1.10.0",
-    "morgan": "^1.10.0",
-    "multer": "^1.4.5-lts.1",
-    "pdf-parse": "^1.1.1",
-    "swagger-jsdoc": "^6.2.8",
-    "swagger-ui-express": "4.6.3",
-    "uuid": "^9.0.1",
-    "xlsx": "^0.18.5"
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "cd server && npm run dev",
+    "dev:client": "cd client && npm run dev",
+    "build": "npm run build:server && npm run build:client",
+    "build:server": "cd server && npm run build",
+    "build:client": "cd client && npm run build",
+    "start": "concurrently \"npm run start:server\" \"npm run start:client\"",
+    "start:server": "cd server && npm start",
+    "start:client": "cd client && npm start",
+    "setup": "npm install && cd server && npm install && cd ../client && npm install"
   },
   "devDependencies": {
-    "eslint": "^8.55.0",
-    "jest": "^29.7.0",
-    "nodemon": "^3.0.2",
-    "supertest": "^6.3.3"
+    "concurrently": "^8.2.0"
   },
-  "engines": {
-    "node": ">=18.0.0"
-  }
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "keywords": [
+    "ai",
+    "chat",
+    "knowledge-management",
+    "nextjs",
+    "express",
+    "supabase",
+    "clerk"
+  ],
+  "author": "PKC Team",
+  "license": "MIT"
 }

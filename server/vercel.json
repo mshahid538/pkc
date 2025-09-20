@@ -1,0 +1,65 @@
+{
+  "version": 2,
+  "name": "personal-knowledge-console",
+  "builds": [
+    {
+      "src": "src/index.js",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api-docs",
+      "dest": "src/index.js",
+      "headers": {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, PATCH, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Requested-With, Accept"
+      }
+    },
+    {
+      "src": "/api-docs/(.*)",
+      "dest": "src/index.js",
+      "headers": {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, PATCH, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Requested-With, Accept"
+      }
+    },
+    {
+      "src": "/api/(.*)",
+      "dest": "src/index.js",
+      "headers": {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, PATCH, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Requested-With, Accept"
+      }
+    },
+    {
+      "src": "/healthz",
+      "dest": "src/index.js"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "src/index.js"
+    }
+  ],
+  "env": {
+    "NODE_ENV": "production",
+    "SUPABASE_URL": "https://kzovbtafmkwjdaoycaab.supabase.co",
+    "SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt6b3ZidGFmbWt3amRhb3ljYWFiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTU4NDAyMTcsImV4cCI6MjA3MTQxNjIxN30.AkZryJTGgEGlzj6sYW2Ntq-v0CwIHD2OsKHPy7yPy2k",
+    "SUPABASE_SERVICE_ROLE_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt6b3ZidGFmbWt3amRhb3ljYWFiIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1NTg0MDIxNywiZXhwIjoyMDcxNDE2MjE3fQ.ZTrzGfeN3m0ekSRa1tbAGVGOQuoGZ_Wmy0IsaCWHZtU",
+    "OPENAI_API_KEY": "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",
+    "OPENAI_MODEL": "gpt-3.5-turbo",
+    "CLERK_PUBLISHABLE_KEY": "pk_test_bm9ibGUtZmVsaW5lLTAuY2xlcmsuYWNjb3VudHMuZGV2JA",
+    "CLERK_SECRET_KEY": "sk_test_lkJZyMSV0fLrBdnxRwVVPytjYgQ9hmD7BqkX5pRS08",
+    "CLERK_WEBHOOK_SECRET": "whsec_your_webhook_secret_here",
+    "MAX_FILE_SIZE": "10485760",
+    "ALLOWED_FILE_TYPES": "pdf,txt,md,doc,docx,xls,xlsx,csv",
+    "UPLOAD_BUCKET_NAME": "pkc-uploads",
+    "RATE_LIMIT_WINDOW_MS": "900000",
+    "RATE_LIMIT_MAX_REQUESTS": "100",
+    "APP_VERSION": "1.0.0",
+    "COMMIT_HASH": "production"
+  }
+}

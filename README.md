@@ -1,94 +1,152 @@
-# Personal Knowledge Console (PKC) - Backend
+# PKC - Personal Knowledge Console
 
-### Installation
+A full-stack application with AI-powered chat, file management, and knowledge organization.
 
-1. **Clone and install dependencies**
+## Project Structure
 
-   ```bash
-   git clone <repository-url>
-   cd personal-knowledge-console
-   npm install
-   ```
+```
+pkc-superbase-openai/
+├── client/          # Next.js 14 Frontend
+├── server/          # Node.js/Express Backend
+└── README.md        # This file
+```
 
-2. **Environment Setup**
+## Quick Start
 
-   ```bash
-   cp env.example .env
-   # Edit .env with your Supabase credentials
-   ```
+### Prerequisites
+- Node.js 18+ 
+- npm or yarn
+- Supabase account
+- Clerk account
 
-3. **Database Setup**
+### 1. Backend Setup
+```bash
+cd server
+npm install
+cp .env.example .env
+# Update .env with your credentials
+npm run dev
+```
 
-   ```bash
-   npm run migrate
-   ```
+### 2. Frontend Setup
+```bash
+cd client
+npm install
+cp .env.example .env.local
+# Update .env.local with your credentials
+npm run dev
+```
 
-4. **Start Development Server**
-   ```bash
-   npm run dev
-   ```
+### 3. Access the Application
+- **Frontend**: http://localhost:3002
+- **Backend API**: http://localhost:3000
+- **API Docs**: http://localhost:3000/api-docs
 
-The API will be available at `http://localhost:3000`
+## Development
 
-5. **View API Documentation**
-   Open your browser and go to: `http://localhost:3000/api-docs`
+### Backend (Server)
+- **Port**: 3000
+- **Framework**: Express.js
+- **Database**: Supabase (PostgreSQL)
+- **Auth**: Clerk
+- **AI**: OpenAI
 
----
+### Frontend (Client)
+- **Port**: 3002
+- **Framework**: Next.js 14
+- **Styling**: Tailwind CSS
+- **Auth**: Clerk
 
-## Runbook & Operations
+## Key Features
 
-- **Health Check:**
+- **Authentication**: Clerk-based user management
+- **AI Chat**: OpenAI-powered conversations
+- **File Management**: Upload and organize documents
+- **Threads**: Conversation history
+- **Search**: Global content search
+- **Dashboard**: User statistics and activity
 
-  - Endpoint: `GET /healthz`
-  - Returns `{ success: true, ... }` if the service is live.
+## Available Scripts
 
-- **Environment Variables:**
+### Backend
+```bash
+npm run dev          # Start development server
+npm run test         # Run tests
+npm run test:watch   # Run tests in watch mode
+```
 
-  - `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`
-  - `OPENAI_API_KEY`, `OPENAI_MODEL`
-  - `JWT_SECRET`, `UPLOAD_BUCKET_NAME`, etc.
+### Frontend
+```bash
+npm run dev          # Start development server
+npm run build        # Build for production
+npm run start        # Start production server
+npm run lint         # Run ESLint
+```
 
-- **Database Migrations:**
-  - Run `npm run migrate` to apply schema changes.
+## Environment Variables
 
----
+### Backend (.env)
+```env
+SUPABASE_URL=your_supabase_url
+SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
+CLERK_SECRET_KEY=your_clerk_secret_key
+OPENAI_API_KEY=your_openai_api_key
+PORT=3000
+NODE_ENV=development
+```
 
-## Features (Phase 1)
+### Frontend (.env.local)
+```env
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=your_clerk_publishable_key
+NEXT_PUBLIC_CLERK_SIGN_IN_URL=/sign-in
+NEXT_PUBLIC_CLERK_SIGN_UP_URL=/sign-up
+NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL=/dashboard
+NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL=/dashboard
+NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
+NEXT_PUBLIC_API_URL=http://localhost:3000
+```
 
-- **Threaded Chat with AI**
+## Testing
 
-  - Create, store, and retrieve threads and messages.
-  - Each thread maintains context and memory using OpenAI summaries.
-  - Summaries are updated after each exchange and used in future replies.
+### Backend Tests
+```bash
+cd server
+npm test
+```
 
-- **File Uploads**
+### Frontend Tests
+```bash
+cd client
+npm test
+```
 
-  - Upload PDF, TXT, or MD files (deduped by SHA256).
-  - Files are stored in Supabase Storage and indexed in the DB.
-  - On upload, keywords/entities are extracted (OpenAI) and stored as tags for future features.
+## Documentation
 
-- **Authentication**
+- [API Documentation](http://localhost:3000/api-docs) - Swagger UI
 
-  - All protected endpoints require JWT auth. 401 returned if unauthenticated.
+## Deployment
 
-- **Metadata & Tagging**
-  - Basic keyword/entity extraction and tagging for files.
+### Backend (Vercel)
+```bash
+cd server
+vercel deploy
+```
 
----
+### Frontend (Vercel)
+```bash
+cd client
+vercel deploy
+```
 
-## Troubleshooting
+## Contributing
 
-- **File upload/storage errors:**
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests
+5. Submit a pull request
 
-  - Ensure Supabase Storage bucket exists and policies allow uploads.
-  - Check `.env` for correct keys and bucket name.
+## License
 
-- **OpenAI errors:**
-
-  - Ensure `OPENAI_API_KEY` is valid and not expired.
-  - Check logs for error details.
-
-- **Database errors:**
-  - Run migrations and check DB connection.
-
----
+This project is licensed under the MIT License.
