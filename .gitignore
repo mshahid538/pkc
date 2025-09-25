@@ -114,3 +114,4 @@ docs/
 # Backup files
 *.bak
 *.backup
+config.bat
