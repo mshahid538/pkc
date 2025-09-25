@@ -110,65 +110,29 @@ router.post(
       throw new AppError("Failed to fetch conversation context", 500);
     }
 
-    // Use file chunks for semantic retrieval
-    const { getEmbeddings } = require("../utils/openai");
+    const { findRelevantChunks } = require("../utils/openai");
     let fileContext = "";
-    const SIMILARITY_THRESHOLD = 0.3;
     try {
-      // Get embedding for user question
-      const [queryEmbedding] = await getEmbeddings([message]);
-      
-      // Use vector similarity search
-      const { data: chunks, error: chunkError } = await supabaseAdmin.rpc(
-        'match_file_chunks',
-        {
-          query_embedding: queryEmbedding,
-          match_threshold: SIMILARITY_THRESHOLD,
-          match_count: 5,
-          user_id: userId
-        }
-      );
+      const { data: allChunks, error: chunkError } = await supabaseAdmin
+        .from("file_chunks")
+        .select("id, chunk_text, file_id")
+        .eq("user_id", userId)
+        .limit(50);
       
       if (chunkError) {
-        console.error("Vector search error:", chunkError);
-        const { data: allChunks, error: fallbackError } = await supabaseAdmin
-        .from("file_chunks")
-        .select("chunk_text, embedding")
-        .eq("user_id", userId);
-        
-        if (fallbackError) throw fallbackError;
-        
-        if (allChunks && allChunks.length) {
-          const { cosineSimilarity } = require("../utils/openai");
-          // Compute similarity manually
-          for (const chunk of allChunks) {
-          let embeddingB = chunk.embedding;
-          if (typeof embeddingB === "string") {
-            try {
-              embeddingB = JSON.parse(embeddingB);
-            } catch (e) {
-              console.error("[AI EMBEDDING PARSE ERROR]", e);
-              embeddingB = [];
-            }
-          }
-          if (!Array.isArray(embeddingB) || embeddingB.length === 0) {
-            chunk.sim = 0;
-          } else {
-            chunk.sim = cosineSimilarity(queryEmbedding, embeddingB);
-          }
-        }
-          const topChunks = allChunks.sort((a, b) => b.sim - a.sim).slice(0, 5);
-          const relevantChunks = topChunks.filter((c) => c.sim >= SIMILARITY_THRESHOLD);
-        if (relevantChunks.length) {
-          fileContext = relevantChunks.map((c) => c.chunk_text).join("\n\n");
-          }
-        }
-      } else if (chunks && chunks.length) {
-        fileContext = chunks.map((c) => c.chunk_text).join("\n\n");
-      } else {
+        console.error("Chunk fetch error:", chunkError);
+        throw chunkError;
       }
       
-        if (fileContext.length > 8000) fileContext = fileContext.slice(0, 8000);
+      if (allChunks && allChunks.length > 0) {
+        const relevantChunks = await findRelevantChunks(message, allChunks, 5);
+        
+        if (relevantChunks && relevantChunks.length > 0) {
+          fileContext = relevantChunks.map(chunk => chunk.chunk_text).join('\n\n');
+        }
+      }
+      
+      if (fileContext.length > 8000) fileContext = fileContext.slice(0, 8000);
     } catch (e) {
       console.error("File context fetch error (RAG):", e);
     }
